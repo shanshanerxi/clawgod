@@ -1,0 +1,453 @@
+# ClawGod + Security Research Toolkit — 技术架构文档
+
+> 一键安装方案：ClawGod 二进制补丁 + 安全研究配置体系 + 47 Hack Skills，支持 symlink 热更新
+
+---
+
+## 1. 项目定位
+
+### 问题
+
+ClawGod 解决了 Claude Code 的二进制层限制解除，但安全研究人员的完整工作流还需要：
+
+- 身份授权（Rules）让模型识别安全研究意图
+- 场景路由（Hook）自动注入对应工作流提示
+- 全局指令（CLAUDE.md）定义输出规范和工具栈
+- 47 个 Hack Skills 知识库按需加载
+
+这些配置目前需要手动 6 步安装，且没有统一的更新机制。
+
+### 方案
+
+在 ClawGod Fork 仓库中集成配置文件，改造安装脚本实现**一个命令完成全部部署**，通过 **symlink** 机制让用户后续只需 `git pull` 即可同步配置更新。
+
+---
+
+## 2. 技术路线
+
+### 2.1 整体流程
+
+```
+用户执行 curl | bash / irm | iex
+        │
+        ▼
+┌─────────────────────────────┐
+│  Phase 1: ClawGod 安装       │  原有逻辑，不变
+│  ├── npm install CLI 包      │
+│  ├── 提取 cli.js + vendor    │
+│  ├── 提取 native modules     │
+│  ├── 写入 wrapper (cli.js)   │
+│  ├── 正则补丁 (patch.js)     │
+│  └── 替换 claude 命令        │
+├─────────────────────────────┤
+│  Phase 2: 配置部署 (新增)     │
+│  ├── git clone 到本机        │
+│  ├── symlink 配置文件        │
+│  ├── 合并 settings.json      │
+│  └── symlink hack-skills     │
+└─────────────────────────────┘
+        │
+        ▼
+   安装完成，开箱即用
+```
+
+### 2.2 更新机制
+
+```
+用户更新配置（你更新 repo 后）
+        │
+        ▼
+cd ~/.claude-security-toolkit && git pull
+        │
+        ▼
+  symlink 自动指向新文件 → 即时生效
+        │
+        ▼
+  重启 Claude Code 或下一条消息生效
+```
+
+ClawGod 本身更新：重新运行安装命令，Phase 1 会拉取最新版本重新补丁。
+
+---
+
+## 3. 仓库结构
+
+```
+clawgod/                              # Fork 自 0Chencc/clawgod
+├── install.sh                        # 改造：Phase 1 (原版) + Phase 2 (新增)
+├── install.ps1                       # 改造：Windows 版同上
+├── configs/                          # ── 新增：安全研究配置文件 ──
+│   ├── rules--security-research-context.md   # 身份授权规则
+│   ├── security-context-hook.py              # 场景识别 Hook
+│   ├── CLAUDE.md                             # 全局工作指令
+│   ├── settings-fragment.json                # settings.json 合并片段
+│   └── merge-settings.js                     # 智能合并脚本
+├── hack-skills/                       # ── 新增：安全技能知识库 ──
+│   └── skills/                         # 45 个技能目录
+│       ├── xss-cross-site-scripting/
+│       │   └── SKILL.md
+│       ├── sqli-sql-injection/
+│       │   ├── SKILL.md
+│       │   └── SCENARIOS.md
+│       └── ... (共 45 个)
+├── (原有 ClawGod 文件保持不变)
+├── .github/
+├── CNAME
+├── LICENSE
+├── README.md
+└── ...
+```
+
+### 各文件职责
+
+| 文件                                  | 类型            | 职责                                               |
+| ------------------------------------- | --------------- | -------------------------------------------------- |
+| `install.sh`                          | Shell 脚本      | macOS/Linux 安装器，Phase 1 补丁 + Phase 2 部署    |
+| `install.ps1`                         | PowerShell 脚本 | Windows 安装器，同上，含 Windows 特殊处理          |
+| `rules--security-research-context.md` | Rules           | 安全研究身份授权，覆盖默认安全拒绝机制             |
+| `security-context-hook.py`            | Hook (Python)   | LLM+关键词双模式场景识别，注入 `additionalContext` |
+| `CLAUDE.md`                           | 全局指令        | 工具栈、输出规范、场景模板、代码约定               |
+| `settings-fragment.json`              | JSON 片段       | hooks 注册、权限模式、记忆开关（不含 API Key）     |
+| `merge-settings.js`                   | Node.js 脚本    | 智能合并 settings.json，保留用户已有配置           |
+| `hack-skills/skills/*`                | 知识库          | 47 个 Web 安全技能的 SKILL.md                      |
+
+---
+
+## 4. 部署架构
+
+### 4.1 文件映射（安装后用户机器上的状态）
+
+```
+~/.claude-security-toolkit/                    # repo clone (git 管理)
+├── configs/
+│   ├── rules--security-research-context.md
+│   ├── security-context-hook.py
+│   ├── CLAUDE.md
+│   ├── settings-fragment.json
+│   └── merge-settings.js
+└── hack-skills/skills/
+
+~/.claude/                                      # Claude Code 配置目录
+├── rules/common/
+│   └── rules--security-research-context.md ─── symlink → repo configs/
+├── hooks/
+│   └── security-context-hook.py ───────────── symlink → repo configs/
+├── CLAUDE.md ───────────────────────────────── symlink → repo configs/
+├── hack-skills-library/
+│   └── skills ──────────────────────────────── symlink → repo hack-skills/skills/
+└── settings.json ──────────────────────────── 实际文件 (合并生成，非 symlink)
+
+~/.clawgod/                                     # ClawGod 工作目录 (原版逻辑)
+├── cli.js (patched)
+├── cli.original.js
+├── patch.js
+├── vendor/
+├── provider.json
+└── features.json
+```
+
+### 4.2 Symlink 与非 Symlink 的选择
+
+| 文件                                  | 方式                       | 原因                                       |
+| ------------------------------------- | -------------------------- | ------------------------------------------ |
+| `rules--security-research-context.md` | **symlink**                | 纯配置，你更新 repo 后用户 git pull 即生效 |
+| `security-context-hook.py`            | **symlink**                | 脚本逻辑，同上                             |
+| `CLAUDE.md`                           | **symlink**                | 全局指令，同上                             |
+| `hack-skills/skills/`                 | **symlink/junction**       | 知识库，同上                               |
+| `settings.json`                       | **合并写入（非 symlink）** | 包含用户私有 API Key，必须独立存在         |
+
+### 4.3 Windows 特殊处理
+
+Windows 下 symlink 需要管理员权限或开发者模式，install.ps1 采用三级降级策略：
+
+```
+尝试创建 SymbolicLink
+    │ 失败
+    ▼
+尝试创建 HardLink（NTFS 文件级，无需管理员）
+    │ 失败
+    ▼
+Copy-Item（最终降级，提示用户 edits won't sync）
+```
+
+目录链接使用 `cmd /c mklink /J`（Junction），Windows 原生支持，无需任何权限。
+
+---
+
+## 5. settings.json 合并策略
+
+### 5.1 问题
+
+`settings.json` 包含用户的私有配置（API Key、自定义模型 ID），不能被 symlink 覆盖。但我们需要注入 `hooks`、`permissions` 等安全研究配置。
+
+### 5.2 合并规则
+
+`merge-settings.js` 实现了基于字段的智能合并：
+
+```
+settings-fragment.json          用户已有 settings.json
+        │                              │
+        ▼                              ▼
+  ┌─────────┐                   ┌──────────┐
+  │ env     │──── 只添加不存在的 key ────→│ env      │  ← 用户 API Key 不动
+  │ hooks   │──── 按 command 去重追加 ───→│ hooks    │  ← 不重复注册
+  │ perms   │──── 不存在时写入 ─────────→│          │
+  │ memory  │──── 不存在时写入 ─────────→│          │
+  └─────────┘                   └──────────┘
+                                        │
+                                        ▼
+                                  合并后的 settings.json
+```
+
+具体逻辑：
+
+| 字段                                | 合并策略                                                     |
+| ----------------------------------- | ------------------------------------------------------------ |
+| `env`                               | 遍历 fragment 中的每个 key，**仅当用户 settings 中不存在该 key 时才写入**。绝不覆盖已有值 |
+| `hooks`                             | 按 `command` 字符串去重，只追加用户没有的 hook 条目          |
+| `permissions`                       | 仅当用户 settings 中无此字段时写入                           |
+| `autoMemoryEnabled`                 | 仅当用户 settings 中无此字段时写入                           |
+| `skipDangerousModePermissionPrompt` | 仅当用户 settings 中无此字段时写入                           |
+
+### 5.3 路径占位符
+
+`settings-fragment.json` 中 hook 的 command 路径使用 `__CLAUDE_DIR__` 占位符：
+
+```json
+{
+  "command": "python __CLAUDE_DIR__/hooks/security-context-hook.py"
+}
+```
+
+合并时自动替换为实际路径（如 `C:/Users/用户名/.claude/hooks/security-context-hook.py`），确保跨用户兼容。
+
+---
+
+## 6. 安装脚本改造细节
+
+### 6.1 install.sh 改造（macOS/Linux）
+
+在 ClawGod 原版脚本的 `# ─── Done` 之前，插入完整的 Phase 2 代码块：
+
+```
+原脚本结构：
+  Line 1-1008:  ClawGod 安装逻辑（npm install → 补丁 → 替换命令）
+  Line 1009+:   ─── Done ───
+
+改造后结构：
+  Line 1-1008:  ClawGod 安装逻辑（完全不变）
+  Line 1009+:   Phase 2: Security Research Config Deployment
+                  ├── git clone / pull
+                  ├── mkdir -p
+                  ├── deploy_symlink() × 4
+                  ├── node merge-settings.js
+                  └── Done（含新输出信息）
+```
+
+`deploy_symlink()` 是新增的幂等函数：
+
+- 检查源文件是否存在
+- 如果目标是 symlink → 删除重建
+- 如果目标是普通文件 → 备份为 `.bak.{timestamp}` 后重建
+- `ln -sf` 创建 symlink
+
+### 6.2 install.ps1 改造（Windows）
+
+同样在原版 `# ─── Done` 之前插入 Phase 2，Windows 特有处理：
+
+- `git clone` 用 `2>$null` 抑制 git 的 stderr 输出
+- `git pull` 包裹在 `try/catch` 中，离线时不阻塞安装
+- 文件链接：`New-Item -ItemType SymbolicLink` → `HardLink` → `Copy-Item`
+- 目录链接：`cmd /c mklink /J`（Junction）
+- `node merge-settings.js` 调用方式与 Linux 相同（Node.js 跨平台）
+
+### 6.3 需要用户替换的占位符
+
+安装脚本中有**一个必须替换**的变量：
+
+```bash
+# install.sh 中
+REPO_URL="https://github.com/YOUR_USERNAME/clawgod.git"
+
+# install.ps1 中
+$RepoUrl    = "https://github.com/YOUR_USERNAME/clawgod.git"
+```
+
+替换为你 Fork 后的实际仓库地址即可。
+
+---
+
+## 7. 运行时架构
+
+### 7.1 Claude Code 启动时的加载链
+
+```
+claude 命令启动 (patched by ClawGod)
+        │
+        ▼
+┌──────────────────────────────────────────────────┐
+│  Layer 0: ClawGod 补丁层                          │
+│  ├── cli.js (二进制补丁后的 bundle)                │
+│  ├── Internal User Mode 已解锁                    │
+│  ├── CYBER_RISK_INSTRUCTION 已移除                │
+│  ├── Agent Teams / Computer Use 已解锁            │
+│  └── 绿色主题标识                                  │
+├──────────────────────────────────────────────────┤
+│  Layer 1: Rules (自动加载)                         │
+│  └── rules/common/rules--security-research-context.md │
+│      → 身份授权 + 研究范围 + 行为规则               │
+├──────────────────────────────────────────────────┤
+│  Layer 2: Hook (每次用户输入时触发)                 │
+│  └── hooks/security-context-hook.py               │
+│      → LLM/关键词分类 → 注入 [security:xxx] 标签   │
+├──────────────────────────────────────────────────┤
+│  Layer 3: CLAUDE.md (自动加载)                     │
+│  └── CLAUDE.md                                    │
+│      → 工具栈 + 输出规范 + 场景模板 + 代码约定      │
+├──────────────────────────────────────────────────┤
+│  Layer 4: Hack Skills (按需加载)                    │
+│  └── hack-skills-library/skills/* (45 个 SKILL.md)│
+│      → 各攻击面的深度知识库                         │
+├──────────────────────────────────────────────────┤
+│  Layer 5: Agent (按编排触发)                        │
+│  └── Claude Code 内置 agents                       │
+│      → ctf-solver / vuln-analyst / pentest-operator │
+└──────────────────────────────────────────────────┘
+```
+
+### 7.2 Hook 场景路由流程
+
+```
+用户输入: "帮我分析这个 SQL 注入漏洞"
+        │
+        ▼
+security-context-hook.py
+        │
+        ├── 检查 API Key 是否存在
+        │   ├── 存在 → LLM 分类 (Haiku)
+        │   │     ├── 返回 INJECT vuln → 注入 [security:vuln] 标签
+        │   │     └── 返回 PASS → 不注入，透传原文
+        │   └── 不存在 → 关键词匹配
+        │         ├── 命中 "sql" + "注入" → 注入 [security:vuln]
+        │         └── 未命中 → 透传原文
+        │
+        ▼
+Claude 收到带 [security:vuln] additionalContext 的 prompt
+        │
+        ▼
+按 "根因 → 触发条件 → 影响 → PoC → 修复建议" 结构输出
+```
+
+### 7.3 ClashGod 补丁与配置层的协作
+
+| 层               | 作用                                     | 修改位置                  |
+| ---------------- | ---------------------------------------- | ------------------------- |
+| ClawGod (二进制) | 移除 `CYBER_RISK_INSTRUCTION` 等系统指令 | `~/.clawgod/cli.js`       |
+| Rules (配置)     | 注入安全研究身份，声明授权范围           | `~/.claude/rules/common/` |
+| Hook (运行时)    | 每次输入实时分类，注入场景提示           | `~/.claude/hooks/`        |
+| CLAUDE.md (指令) | 定义输出格式和工具栈                     | `~/.claude/CLAUDE.md`     |
+
+ClawGod 在**二进制层**移除了硬编码的安全限制，配置层在**上下文层**注入安全研究身份和场景知识。两层互补：即使 Claude Code 更新后 ClawGod 补丁失效，配置层仍能通过 Rules 和 Hook 提供基础的安全研究支持。
+
+---
+
+## 8. 用户操作指南
+
+### 8.1 首次安装
+
+```bash
+# macOS / Linux
+curl -fsSL raw.githubusercontent.com/YOUR_USERNAME/clawgod/main/install.sh | bash
+
+# Windows (PowerShell, 管理员)
+irm raw.githubusercontent.com/YOUR_USERNAME/clawgod/main/install.ps1 | iex
+```
+
+安装完成后**重启终端**，运行 `claude` 看到绿色 logo 即为成功。
+
+### 8.2 更新配置
+
+当你（维护者）更新了 repo 中的配置文件后，用户执行：
+
+```bash
+cd ~/.claude-security-toolkit && git pull
+```
+
+symlink 自动指向最新文件，**无需重启 Claude Code**，下一条消息即可使用更新后的配置。
+
+### 8.3 更新 ClawGod 本身
+
+当 Claude Code 发版需要新补丁时，用户重新运行安装命令即可。Phase 1 会拉取最新版本重新补丁，Phase 2 会更新配置。
+
+### 8.4 配置自定义
+
+用户如果需要自定义 CLAUDE.md 或 Hook：
+
+1. 删除对应的 symlink：`rm ~/.claude/CLAUDE.md`
+2. 创建自己的文件：`vim ~/.claude/CLAUDE.md`
+3. symlimk 已被删除，用户的文件独立存在，不受 git pull 影响
+
+### 8.5 卸载
+
+```bash
+# 卸载 ClawGod (恢复原版)
+curl -fsSL raw.githubusercontent.com/YOUR_USERNAME/clawgod/main/install.sh --uninstall | bash
+
+# 或手动清理
+rm -rf ~/.claude-security-toolkit
+rm ~/.claude/rules/common/rules--security-research-context.md
+rm ~/.claude/hooks/security-context-hook.py
+rm ~/.claude/CLAUDE.md
+rm -rf ~/.claude/hack-skills-library
+# 然后编辑 ~/.claude/settings.json 移除 hooks 段
+```
+
+---
+
+## 9. 维护者指南
+
+### 9.1 更新配置文件
+
+1. 编辑 `configs/` 下的文件
+2. `git commit && git push`
+3. 通知用户 `cd ~/.claude-security-toolkit && git pull`
+
+### 9.2 更新 Hack Skills
+
+1. 从 [yaklang/hack-skills](https://github.com/yaklang/hack-skills) 拉取最新 SKILL.md
+2. 替换 `hack-skills/skills/` 下对应目录
+3. `git commit && git push`
+
+### 9.3 跟进 ClawGod 上游
+
+1. 在 Fork 中 `git remote add upstream https://github.com/0Chencc/clawgod.git`
+2. `git fetch upstream && git merge upstream/main`
+3. 解决冲突（主要在 install.sh/install.ps1 的 Phase 2 部分）
+4. `git push`
+
+### 9.4 新增配置文件
+
+如果需要新增一个配置文件（如新的 Rule）：
+
+1. 将文件放入 `configs/`
+2. 在 `install.sh` 的 symlink 部分添加一行 `deploy_symlink`
+3. 在 `install.ps1` 的 `Deploy-Link` 部分添加对应调用
+4. 测试后 commit
+
+---
+
+## 10. 体积与依赖
+
+| 组件                  | 大小        | 来源                                                |
+| --------------------- | ----------- | --------------------------------------------------- |
+| `install.sh`          | ~28 KB      | ClawGod 原版 + Phase 2 (~80 行新增)                 |
+| `install.ps1`         | ~35 KB      | ClawGod 原版 + Phase 2 (~120 行新增)                |
+| `configs/` 全部文件   | ~18 KB      | 自研配置                                            |
+| `hack-skills/skills/` | ~528 KB     | yaklang/hack-skills (45 个 SKILL.md + SCENARIOS.md) |
+| **repo 总增量**       | **~600 KB** | 在 ClawGod 原版基础上                               |
+
+运行时依赖（用户需预先安装）：
+
+- Node.js >= 18 + npm（Claude Code 本身的要求）
+- git（用于 clone/pull）
+- Python 3（用于 hook 脚本，仅关键词模式不需要 API Key 时也可用 Python 2）
