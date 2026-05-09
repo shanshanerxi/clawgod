@@ -101,6 +101,36 @@ else
 fi
 info "Bun: $($BUN_BIN --version)"
 
+# ─── Bun version pre-flight ───────────────────────────────────────────
+# Anthropic builds the native binary with Bun's canary channel; stable
+# bun.sh trails by one version. Bun < 1.3.14 panics on cli.original.cjs
+# with "Expected CommonJS module to have a function wrapper". Refuse
+# early — no npm download / no patch / no late sanity surprise.
+# Bump MIN_BUN_VERSION when Anthropic moves the embedded Bun forward
+# again (track via 'bun upgrade --canary' on a runner + smoke test).
+
+MIN_BUN_VERSION="1.3.14"
+BUN_VERSION_RAW=$($BUN_BIN --version 2>/dev/null | head -1)
+BUN_VERSION_NUM=$(echo "$BUN_VERSION_RAW" | sed 's/-.*//')
+if [ -z "$BUN_VERSION_NUM" ] \
+   || [ "$(printf '%s\n%s\n' "$BUN_VERSION_NUM" "$MIN_BUN_VERSION" | sort -V | head -1)" != "$MIN_BUN_VERSION" ]; then
+  warn ""
+  warn "Bun ${BUN_VERSION_RAW:-<unknown>} is below the required minimum ($MIN_BUN_VERSION)."
+  warn ""
+  warn "  Anthropic builds claude-code with Bun's canary channel. Older Bun"
+  warn "  panics on cli.original.cjs with 'Expected CommonJS module to have"
+  warn "  a function wrapper'. This is a hard requirement, not a warning."
+  warn ""
+  warn "  Upgrade with one of:"
+  warn "    bun upgrade --canary               (if installed via curl/install.sh)"
+  warn "    brew upgrade bun                   (homebrew)"
+  warn "    scoop uninstall bun && \\           (scoop — shim blocks self-replace)"
+  warn "      irm https://bun.sh/install.ps1 | iex && bun upgrade --canary"
+  warn ""
+  warn "  Then re-run this installer."
+  exit 1
+fi
+
 # ─── ripgrep prerequisite (search/grep tool) ──────────────────────────
 # Without rg the Grep tool inside Claude Code fails. Bun-bundled ripgrep
 # is only reachable from inside the standalone executable; running the

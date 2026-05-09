@@ -103,6 +103,50 @@ if (-not $BunBin) {
 }
 Write-OK "Bun: $(& $BunBin --version)"
 
+# ─── Bun version pre-flight ───────────────────────────────────────────
+# Anthropic builds the native binary with Bun's canary channel; stable
+# bun.sh trails by one version. Bun < 1.3.14 panics on cli.original.cjs
+# with "Expected CommonJS module to have a function wrapper". Refuse
+# early — no npm download / no patch / no late sanity surprise where
+# PowerShell's NativeCommandError display buries the friendly message.
+# Bump $MinBunVersion when Anthropic moves the embedded Bun forward
+# again.
+
+$MinBunVersion = '1.3.14'
+$BunVersionRaw = ''
+try {
+    $bunOut = & $BunBin --version 2>$null | Select-Object -First 1
+    if ($bunOut) { $BunVersionRaw = "$bunOut".Trim() }
+} catch {}
+$BunVersionNum = ($BunVersionRaw -split '-')[0]
+$BunVersionOk = $false
+try {
+    if ($BunVersionNum) {
+        $BunVersionOk = ([version]$BunVersionNum) -ge ([version]$MinBunVersion)
+    }
+} catch {}
+if (-not $BunVersionOk) {
+    Write-Host ""
+    Write-Err "Bun $BunVersionRaw is below the required minimum ($MinBunVersion)."
+    Write-Err ""
+    Write-Err "  Anthropic builds claude-code with Bun's canary channel. Older Bun"
+    Write-Err "  panics on cli.original.cjs with 'Expected CommonJS module to have"
+    Write-Err "  a function wrapper'. This is a hard requirement, not a warning."
+    Write-Err ""
+    Write-Err "  Upgrade with one of:"
+    Write-Err "    bun upgrade --canary"
+    Write-Err "    powershell -c ""iex & {`$(irm https://bun.sh/install.ps1)} -Version canary"""
+    Write-Err ""
+    Write-Err "  If your bun is from scoop (the binary is behind a shim and refuses"
+    Write-Err "  to self-replace, so 'bun upgrade' silently hangs):"
+    Write-Err "    scoop uninstall bun"
+    Write-Err "    irm https://bun.sh/install.ps1 | iex"
+    Write-Err "    bun upgrade --canary"
+    Write-Err ""
+    Write-Err "  Then re-run this installer."
+    exit 1
+}
+
 # ─── ripgrep prerequisite (search/grep tool) ──────────────────────────
 # Hard prerequisite — without rg the Grep tool inside Claude Code fails.
 
@@ -1194,7 +1238,23 @@ if (-not (Test-Path $featuresFile)) {
 
 Write-Dim "Verifying Bun can load patched cli.original.cjs ..."
 $sanityCli = Join-Path $ClawDir "cli.cjs"
-$sanityOut = & $BunBin $sanityCli --version 2>&1 | Out-String
+# PowerShell folds native-command stderr into the error stream as
+# ErrorRecord objects; with $ErrorActionPreference='Stop' (common when
+# this script is piped through `iex`) that terminates BEFORE we even
+# read $sanityOut. Localize ErrorActionPreference + try/catch so the
+# panic message reliably lands in $sanityOut and our friendly Write-Err
+# block runs. Defense-in-depth — pre-flight already blocks Bun < $MinBunVersion;
+# this remains for the day Anthropic bumps embedded Bun past our constant.
+$sanityOut = $null
+try {
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $sanityOut = (& $BunBin $sanityCli --version 2>&1 | Out-String)
+} catch {
+    $sanityOut = "$_"
+} finally {
+    $ErrorActionPreference = $prevEAP
+}
 if ($sanityOut -match "Expected CommonJS module to have a function wrapper") {
     Write-Host ""
     Write-Err "Bun $(& $BunBin --version) cannot load Anthropic's cli.original.cjs."
